@@ -1,280 +1,221 @@
-/* coolgame.js — 2D wave survival shooter for bookmarklet hosting */
+(async function() {
+    // ==== LOAD IMAGES ====
+    const IMAGES = {
+        player: "https://raw.githubusercontent.com/Blitzshark/game-test/main/player.png",
+        slash: "https://raw.githubusercontent.com/Blitzshark/game-test/main/slash.png",
+        enemy: "https://raw.githubusercontent.com/Blitzshark/game-test/main/fire%20ball.png",
+        fireball: "https://raw.githubusercontent.com/Blitzshark/game-test/main/basic%20fire%20guy.png",
+        explosion: "https://raw.githubusercontent.com/Blitzshark/game-test/main/Fire%20explose.png"
+    };
 
-(function(){
-
-// ==== SETUP CANVAS ====
-let game = document.createElement("canvas");
-game.width = 900;
-game.height = 600;
-game.style.position = "fixed";
-game.style.left = "0";
-game.style.top = "0";
-game.style.zIndex = "999999";
-game.style.background = "#111";
-document.body.appendChild(game);
-let ctx = game.getContext("2d");
-
-// ==== GAME STATE ====
-let player = {
-    x: 450, y: 300,
-    r: 12,
-    speed: 3,
-    hp: 100,
-    maxHp: 100,
-    fireRate: 300,
-    lastShot: 0,
-    damage: 10,
-    xp: 0,
-    level: 1
-};
-
-let bullets = [];
-let enemies = [];
-let cardsOnScreen = false;
-let wave = 1;
-let nextWaveTime = Date.now() + 8000;
-
-// ==== CARD UPGRADES ====
-let upgrades = [
-    { name: "Faster Fire Rate",   stat:"fireRate", change:-40 },
-    { name: "More Damage",        stat:"damage",   change:+4  },
-    { name: "More Speed",         stat:"speed",    change:+0.4},
-    { name: "Max HP +20",         stat:"maxHp",    change:+20 },
-    { name: "Bullet Size +3",     stat:"bulletR",  change:+3  },
-];
-
-// default bullet radius
-player.bulletR = 4;
-
-// ==== INPUT ====
-let keys = {};
-document.addEventListener("keydown", e => keys[e.key] = true);
-document.addEventListener("keyup", e => keys[e.key] = false);
-
-game.addEventListener("mousemove", e => {
-    const rect = game.getBoundingClientRect();
-    player.mx = e.clientX - rect.left;
-    player.my = e.clientY - rect.top;
-});
-
-game.addEventListener("click", () => {
-    if (cardsOnScreen) return;
-    shoot();
-});
-
-// ==== FUNCTIONS ====
-
-function shoot() {
-    if (Date.now() - player.lastShot < player.fireRate) return;
-    player.lastShot = Date.now();
-
-    let angle = Math.atan2(player.my - player.y, player.mx - player.x);
-    bullets.push({
-        x: player.x,
-        y: player.y,
-        dx: Math.cos(angle)*8,
-        dy: Math.sin(angle)*8,
-        r: player.bulletR
-    });
-}
-
-function spawnEnemies() {
-    for (let i = 0; i < wave + 2; i++) {
-        enemies.push({
-            x: Math.random()*900,
-            y: Math.random()*600,
-            r: 10 + wave,
-            hp: 20 + wave*5,
-            speed: 1 + wave*0.2
+    function loadImage(url) {
+        return new Promise(res => {
+            const img = new Image();
+            img.src = url;
+            img.onload = () => res(img);
         });
     }
-}
 
-function movePlayer() {
-    if (keys["w"]) player.y -= player.speed;
-    if (keys["s"]) player.y += player.speed;
-    if (keys["a"]) player.x -= player.speed;
-    if (keys["d"]) player.x += player.speed;
+    const sprites = {};
+    for (const k in IMAGES) sprites[k] = await loadImage(IMAGES[k]);
 
-    // boundaries
-    player.x = Math.max(0, Math.min(900, player.x));
-    player.y = Math.max(0, Math.min(600, player.y));
-}
+    // ==== CANVAS SETUP ====
+    const canvas = document.createElement("canvas");
+    document.body.innerHTML = "";
+    document.body.style.margin = "0";
+    document.body.style.overflow = "hidden";
+    document.body.appendChild(canvas);
 
-function moveEnemies() {
-    for (let e of enemies) {
-        let ang = Math.atan2(player.y - e.y, player.x - e.x);
-        e.x += Math.cos(ang)*e.speed;
-        e.y += Math.sin(ang)*e.speed;
+    const ctx = canvas.getContext("2d");
 
-        // collision with player
-        if (dist(e, player) < e.r + player.r) {
-            player.hp -= 0.3;
+    function resize() {
+        canvas.width = innerWidth;
+        canvas.height = innerHeight;
+    }
+    resize();
+    onresize = resize;
+
+    // ==== PLAYER ====
+    const player = {
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+        w: 48,
+        h: 48,
+        frame: 0,
+        frameTimer: 0,
+        dir: "center",  
+        speed: 4,
+        hp: 100,
+        orbs: 0
+    };
+
+    // ==== INPUT ====
+    const keys = {};
+    onkeydown = e => keys[e.key] = true;
+    onkeyup = e => keys[e.key] = false;
+
+    // ==== GAME STATE ====
+    let enemies = [];
+    let projectiles = [];
+    let slashes = [];
+    let explosions = [];
+    let wave = 1;
+    let waveTimer = 0;
+
+    // ==== ENEMY SPAWNING ====
+    function spawnEnemy() {
+        const side = Math.random() * 4;
+        let x, y;
+
+        if (side < 1) { x = -50; y = Math.random() * canvas.height; }
+        else if (side < 2) { x = canvas.width + 50; y = Math.random() * canvas.height; }
+        else if (side < 3) { x = Math.random() * canvas.width; y = -50; }
+        else { x = Math.random() * canvas.width; y = canvas.height + 50; }
+
+        enemies.push({
+            x, y,
+            w: 40,
+            h: 40,
+            hp: wave === 10 ? 300 : 40,
+            boss: wave === 10
+        });
+    }
+
+    function spawnWave() {
+        let count = wave === 10 ? 1 : wave * 3;
+        for (let i = 0; i < count; i++) spawnEnemy();
+    }
+
+    spawnWave();
+
+    // ==== SLASH ATTACK ====
+    function doSlash() {
+        slashes.push({
+            x: player.x,
+            y: player.y,
+            dir: player.dir,
+            lifetime: 10
+        });
+    }
+
+    // ==== COLLISION ====
+    function hit(a, b) {
+        return (
+            a.x < b.x + b.w &&
+            a.x + a.w > b.x &&
+            a.y < b.y + b.h &&
+            a.y + a.h > b.y
+        );
+    }
+
+    // ==== MAIN LOOP ====
+    function loop() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // === Player movement ===
+        if (keys["w"]) player.y -= player.speed;
+        if (keys["s"]) player.y += player.speed;
+        if (keys["a"]) player.x -= player.speed;
+        if (keys["d"]) player.x += player.speed;
+
+        // === Slash input ===
+        if (keys[" "]) {
+            if (!player.slashCooldown) {
+                player.slashCooldown = 20;
+                doSlash();
+            }
         }
-    }
-}
+        if (player.slashCooldown > 0) player.slashCooldown--;
 
-function moveBullets() {
-    for (let b of bullets) {
-        b.x += b.dx;
-        b.y += b.dy;
-    }
-    bullets = bullets.filter(b => b.x>0 && b.x<900 && b.y>0 && b.y<600);
-}
+        // === Player animation ===
+        player.frameTimer++;
+        if (player.frameTimer > 10) {
+            player.frameTimer = 0;
+            player.frame = (player.frame + 1) % 4;
+        }
 
-function bulletHits() {
-    for (let b of bullets) {
-        for (let e of enemies) {
-            if (dist(b,e) < b.r + e.r) {
-                e.hp -= player.damage;
-                b.hit = true;
-                if (e.hp <= 0) {
-                    e.dead = true;
-                    player.xp += 10;
+        // === DRAW PLAYER ===
+        const frameW = sprites.player.width / 4;
+        const frameH = sprites.player.height;
+
+        ctx.drawImage(
+            sprites.player,
+            frameW * player.frame, 0, frameW, frameH,
+            player.x - player.w / 2, player.y - player.h / 2,
+            player.w, player.h
+        );
+
+        // === Update slashes ===
+        for (let i = slashes.length - 1; i >= 0; i--) {
+            let s = slashes[i];
+            s.lifetime--;
+
+            let sx = s.x - 40, sy = s.y - 40;
+            if (s.dir === "up") sy -= 20;
+            if (s.dir === "down") sy += 20;
+
+            ctx.drawImage(sprites.slash, sx, sy, 80, 80);
+
+            if (s.lifetime <= 0) slashes.splice(i, 1);
+        }
+
+        // === Enemies update ===
+        for (let i = enemies.length - 1; i >= 0; i--) {
+            let e = enemies[i];
+
+            const dx = player.x - e.x;
+            const dy = player.y - e.y;
+            const dist = Math.hypot(dx, dy);
+
+            e.x += dx / dist * 1.2;
+            e.y += dy / dist * 1.2;
+
+            // Draw enemy
+            ctx.drawImage(sprites.enemy, e.x - e.w/2, e.y - e.h/2, e.w, e.h);
+
+            // Slash hit
+            for (let s of slashes) {
+                if (hit(
+                    {x: s.x-30, y: s.y-30, w:60, h:60},
+                    e
+                )) {
+                    e.hp -= 40;
+                }
+            }
+
+            // Enemy dead
+            if (e.hp <= 0) {
+                enemies.splice(i, 1);
+                explosions.push({x:e.x, y:e.y, life:20});
+                player.orbs++;
+
+                if (player.orbs >= 5) {
+                    player.orbs = 0;
+                    // TODO: show card popup
                 }
             }
         }
-    }
-    bullets = bullets.filter(b => !b.hit);
-    enemies = enemies.filter(e => !e.dead);
-}
 
-function dist(a,b) {
-    return Math.hypot(a.x-b.x, a.y-b.y);
-}
+        // === Explosion animation ===
+        for (let i = explosions.length - 1; i >= 0; i--) {
+            let ex = explosions[i];
+            ex.life--;
 
-function drawPlayer() {
-    ctx.fillStyle = "white";
-    ctx.beginPath();
-    ctx.arc(player.x, player.y, player.r, 0, Math.PI*2);
-    ctx.fill();
-}
+            ctx.globalAlpha = ex.life / 20;
+            ctx.drawImage(sprites.explosion, ex.x-32, ex.y-32, 64, 64);
+            ctx.globalAlpha = 1;
 
-function drawEnemies() {
-    ctx.fillStyle = "red";
-    for (let e of enemies) {
-        ctx.beginPath();
-        ctx.arc(e.x, e.y, e.r, 0, Math.PI*2);
-        ctx.fill();
-    }
-}
-
-function drawBullets() {
-    ctx.fillStyle = "yellow";
-    for (let b of bullets) {
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
-        ctx.fill();
-    }
-}
-
-function drawHUD() {
-    ctx.fillStyle = "white";
-    ctx.font = "16px Arial";
-    ctx.fillText("HP: " + Math.floor(player.hp), 10, 20);
-    ctx.fillText("Wave: " + wave, 10, 40);
-    ctx.fillText("XP: " + player.xp, 10, 60);
-}
-
-function checkLevelUp() {
-    let needed = player.level * 50;
-    if (player.xp >= needed) {
-        player.xp -= needed;
-        player.level++;
-        showUpgradeCards();
-    }
-}
-
-function showUpgradeCards() {
-    cardsOnScreen = true;
-
-    let picks = [];
-    while (picks.length < 3) {
-        let c = upgrades[Math.floor(Math.random()*upgrades.length)];
-        if (!picks.includes(c)) picks.push(c);
-    }
-
-    drawCards(picks);
-}
-
-function drawCards(cards) {
-    ctx.fillStyle = "rgba(0,0,0,0.8)";
-    ctx.fillRect(0,0,900,600);
-
-    ctx.fillStyle = "white";
-    ctx.font = "26px Arial";
-    ctx.fillText("Choose an Upgrade", 320, 100);
-
-    cards.forEach((card,i) => {
-        let x = 150 + i*250;
-        ctx.fillStyle = "#333";
-        ctx.fillRect(x,200,200,200);
-
-        ctx.fillStyle = "white";
-        ctx.font = "20px Arial";
-        ctx.fillText(card.name, x+20, 260);
-
-        card.box = {x, y:200, w:200, h:200};
-    });
-
-    game.onclick = e => {
-        let rect = game.getBoundingClientRect();
-        let mx = e.clientX - rect.left;
-        let my = e.clientY - rect.top;
-
-        for (let card of cards) {
-            if (mx > card.box.x && mx < card.box.x+card.box.w &&
-                my > card.box.y && my < card.box.y+card.box.h) {
-                
-                player[card.stat] += card.change;
-                cardsOnScreen = false;
-                game.onclick = null;
-            }
+            if (ex.life <= 0) explosions.splice(i, 1);
         }
-    };
-}
 
-function waveLogic() {
-    if (Date.now() > nextWaveTime) {
-        wave++;
-        nextWaveTime = Date.now() + 8000;
-        spawnEnemies();
-    }
-}
+        // === Wave check ===
+        if (enemies.length === 0) {
+            wave++;
+            spawnWave();
+        }
 
-// ==== MAIN LOOP ====
-
-function loop() {
-    if (player.hp <= 0) {
-        ctx.fillStyle = "black";
-        ctx.fillRect(0,0,900,600);
-        ctx.fillStyle="white";
-        ctx.font="40px Arial";
-        ctx.fillText("GAME OVER", 330, 300);
-        return;
+        requestAnimationFrame(loop);
     }
 
-    if (!cardsOnScreen) {
-        movePlayer();
-        moveBullets();
-        moveEnemies();
-        bulletHits();
-        checkLevelUp();
-        waveLogic();
-    }
-
-    ctx.clearRect(0,0,900,600);
-    drawPlayer();
-    drawEnemies();
-    drawBullets();
-    drawHUD();
-
-    requestAnimationFrame(loop);
-}
-
-spawnEnemies();
-loop();
-
-alert("WASD to move • Click to shoot • Survive waves • Level up to pick upgrades!");
-
+    loop();
 })();
